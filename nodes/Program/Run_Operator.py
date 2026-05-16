@@ -254,9 +254,14 @@ class SN_RunOperatorNode(SN_ScriptingBaseNode, bpy.types.Node):
 
         invoke = "" if not self.use_invoke else "'INVOKE_DEFAULT', "
         if self.source_type == "BLENDER":
-            op_name = self.pasted_operator[8:].split("(")[0]
-            op = eval(self.pasted_operator.split("(")[0])
-            op_rna = op.get_rna_type()
+            try:
+                op_name = self.pasted_operator[8:].split("(")[0]
+                op = eval(self.pasted_operator.split("(")[0])
+                op_rna = op.get_rna_type()
+            except:
+                self.code = f"# Operator not found or not registered yet\n{self.indent(self.outputs[0].python_value, 6)}"
+                return
+
             parameters = ""
             for inp in self.inputs[1:]:
                 if not inp.disabled:

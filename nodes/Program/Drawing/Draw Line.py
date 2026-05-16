@@ -2,6 +2,11 @@ import bpy
 from ...base_node import SN_ScriptingBaseNode
 
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Serpens Node
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
     bl_idname = "SN_DrawLineNode"
     bl_label = "Draw Line"
@@ -54,6 +59,19 @@ class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
             ]
         )
 
+        self.add_enum_input("Blend Mode").items = str(
+            [
+                "NONE",
+                "ALPHA",
+                "ALPHA_PREMULT",
+                "ADDITIVE",
+                "ADDITIVE_PREMULT",
+                "MULTIPLY",
+                "SUBTRACT",
+                "INVERT",
+            ]
+        )
+
         inp = self.add_float_vector_input("Point 1")
         inp.size = 2
         inp.default_value[0] = 0
@@ -75,10 +93,18 @@ class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
         layout.prop(self, "use_3d", text="Use 3D")
         layout.prop(self, "use_loc_list", text="Draw Multiple")
 
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Evaluate Node and Draw GPU stuffs
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     def evaluate(self, context):
         self.code_import = f"""
             import gpu
             import gpu_extras
+            from gpu_extras.batch import batch_for_shader
+            from mathutils import Vector
         """
 
         p1 = self.inputs["Point 1"].python_value
@@ -103,18 +129,19 @@ class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
         self.code = f"""
             {coords}
 
-            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-            batch = gpu_extras.batch.batch_for_shader(shader, 'LINES', {{"pos": coords}}, indices=tuple(indices))
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            batch = batch_for_shader(shader, 'LINES', {{"pos": coords}}, indices=tuple(indices))
 
             shader.bind()
-            shader.uniform_float("color", {self.inputs["Color"].python_value})
+            shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+            shader.uniform_float("color", {self.inputs['Color'].python_value})
+            shader.uniform_float("lineWidth", {self.inputs['Width'].python_value})
 
-            gpu.state.line_width_set({self.inputs["Width"].python_value})
+            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})"}
+            {f"gpu.state.line_width_set({self.inputs['Width'].python_value})"}
+            {f"gpu.state.blend_set({self.inputs['Blend Mode'].python_value})"}
+            {f"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
 
-            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})" if self.use_3d else ""}
-            {"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
-
-            gpu.state.blend_set('ALPHA')
             batch.draw(shader)
             {self.indent(self.outputs[0].python_value, 3)}
         """

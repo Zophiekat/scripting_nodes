@@ -31,7 +31,7 @@ class SN_AddToMenuNodeNew(SN_ScriptingBaseNode, bpy.types.Node):
 
 
     def evaluate(self, context):
-        uid = self.uuid
+        uid = self.static_uid if self.static_uid else self.uuid
         func_name = f"sna_add_to_{self.menu_parent.lower()}_{uid}"
 
         self.code = f"""

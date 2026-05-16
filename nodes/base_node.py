@@ -2,6 +2,7 @@ import bpy
 from uuid import uuid4
 from ..utils import normalize_code, indent_code, unique_collection_name
 from .compiler import compile_addon, format_linebreaks
+from ..settings import state
 
 
 class SN_ScriptingBaseNode:
@@ -110,7 +111,7 @@ class SN_ScriptingBaseNode:
     @property
     def root_nodes(self):
         """Returns the trigger nodes that are connected to this node"""
-        return list(filter(lambda node: node.is_trigger, self._get_linked_nodes()))
+        return list(filter(lambda node: getattr(node, "is_trigger", False), self._get_linked_nodes()))
 
     def _get_linked_nodes(self, linked=None, started_at_trigger=False):
         """Recursively returns a list of all nodes linked to the given node"""
@@ -143,17 +144,23 @@ class SN_ScriptingBaseNode:
         # get all nodes linked to the found nodes
         linked += new_linked
         for node in new_linked:
-            linked = node._get_linked_nodes(
-                linked=linked, started_at_trigger=started_at_trigger
-            )
+            if getattr(node, "is_sn", False):
+                linked = node._get_linked_nodes(
+                    linked=linked, started_at_trigger=started_at_trigger
+                )
 
         return linked
 
     def _node_code_changed(self):
         """Triggers an update on all affected, program nodes connected to this node. Called when the code of the node itself changes"""
-        # print(f"Serpens Log: {self.label if self.label else self.name} received an update")
+        # During loading, we handle compilation manually at the end of the load_handler
+        if state.is_loading:
+            return
+
         if self.is_trigger:
-            compile_addon()
+            print(f"Serpens DIAGNOSTIC: Compilation triggered by node '{self.name}' ({self.bl_idname})")
+            if not bpy.app.timers.is_registered(compile_addon):
+                bpy.app.timers.register(compile_addon, first_interval=0.05)
         else:
             # update the code of all program inputs to reflect the nodes code
             for inp in self.inputs:
@@ -251,9 +258,9 @@ class SN_ScriptingBaseNode:
         """Includes connected nodes code in this node if this is a trigger node"""
         if self.is_trigger:
             linked = self._get_linked_nodes(started_at_trigger=True)
-            linked = sorted(linked, key=lambda node: node.order)
+            linked = sorted(linked, key=lambda node: getattr(node, "order", 0))
             for node in linked:
-                if not node == self:
+                if not node == self and getattr(node, "is_sn", False):
                     if node.code_import:
                         self.code_import += "\n" + node.code_import
                     if node.code_imperative:
@@ -264,8 +271,12 @@ class SN_ScriptingBaseNode:
                         self.code_unregister += "\n" + node.code_unregister
 
     def _evaluate(self, context):
+        """Standard evaluation wrapper for property updates"""
+        self._evaluate_forced(context)
+
+    def _evaluate_forced(self, context, force=False):
         """Internal evaluate to check if changes happened and trigger the compile process"""
-        if self.disable_evaluation:
+        if (self.disable_evaluation or state.is_loading) and not force:
             return
 
         # keep track of code before changes
@@ -375,8 +386,9 @@ class SN_ScriptingBaseNode:
 
     def _create_node_collection_item(self):
         """Creates an item in the nodes collection of this node tree for this node"""
-        # set a new collection uid for this node
-        self.static_uid = uuid4().hex[:5].upper()
+        # set a new collection uid for this node if it doesn't have one
+        if not self.static_uid:
+            self.static_uid = uuid4().hex[:5].upper()
         # add a new collection if it doesn't exist yet
         if not self.collection_key in self.node_tree.node_refs:
             collection = self.node_tree.node_refs.add()
@@ -395,6 +407,7 @@ class SN_ScriptingBaseNode:
         self._set_node_color()
         # set up the node
         self.on_create(context)
+        
         # Defer evaluation and name uniqueness check to avoid issues with Blender's 
         # internal state during node creation/paste operations.
         def deferred_init():
@@ -409,6 +422,8 @@ class SN_ScriptingBaseNode:
         pass
 
     def copy(self, old):
+        # set a new collection uid for this node
+        self.static_uid = ""
         # create node collection item
         self._create_node_collection_item()
         # set up the node

@@ -197,11 +197,37 @@ class SN_PanelNode(SN_ScriptingBaseNode, bpy.types.Node):
     def update_idname(self):
         py_name = get_python_name(self.panel_label)
         alt_py_name = get_python_name(self.name)
-        idname = f"SNA_PT_{py_name.upper() if py_name else alt_py_name}_{self.uuid}"
+        
+        # CRITICAL FIX: If last_idname exists but doesn't match static_uid, recover the correct UID
+        if self.last_idname and self.static_uid:
+            # Extract UID from last_idname (e.g., "SNA_PT_CRZ_PANEL_F094F" -> "F094F")
+            parts = self.last_idname.split("_")
+            if len(parts) > 0:
+                old_uid = parts[-1]
+                if len(old_uid) == 5 and old_uid.isalnum() and old_uid != self.static_uid:
+                    print(f"Serpens DIAGNOSTIC: Panel '{self.name}' - Fixing UID mismatch!")
+                    print(f"  - Correcting static_uid from '{self.static_uid}' to '{old_uid}' (from last_idname)")
+                    self.static_uid = old_uid
+        
+        # Use static_uid as it is persistent, unlike uuid which regenerates every call
+        uid = self.static_uid if self.static_uid else self.uuid
+        idname = f"SNA_PT_{py_name.upper() if py_name else alt_py_name}_{uid}"
         if self.idname_override:
             idname = self.idname_override
+        
+        # Only log if something actually changed to avoid spam during re-evaluation pass
+        if self.last_idname != idname:
+            print(f"Serpens DIAGNOSTIC: Panel '{self.name}' update_idname change detected")
+            print(f"  - last_idname (before): '{self.last_idname}'")
+            print(f"  - new idname: '{idname}'")
+            print(f"  - static_uid: '{self.static_uid}'")
+            
+            if self.last_idname:
+                print(f"  ⚠️ ID CHANGED from '{self.last_idname}' to '{idname}'")
+        
         self.last_idname = idname
         self.trigger_ref_update()
+
 
     def evaluate(self, context):
         self.update_idname()
@@ -263,7 +289,7 @@ class SN_PanelNode(SN_ScriptingBaseNode, bpy.types.Node):
             else:
                 self.code_register = f"""
                                     try: bpy.utils.register_class({self.last_idname})
-                                    except: pass
+                                    except Exception as e: print(f"Serpens ERROR: Failed to register panel {{self.last_idname}}: {{e}}")
                                     """
                 self.code_unregister = f"""
                                     try: bpy.utils.unregister_class({self.last_idname})

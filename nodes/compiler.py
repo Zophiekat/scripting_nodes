@@ -2,6 +2,7 @@ from pydoc import doc
 import bpy
 import time
 from ..utils import indent_code, normalize_code
+from ..settings import state
 from ..node_tree.sockets.conversions import CONVERT_UTILS
 from ..addon.properties.compiler_properties import (
     property_imperative_code,
@@ -14,91 +15,125 @@ from ..addon.variables.compiler_variables import (
 )
 
 
+def safe_flush():
+    import sys
+    try:
+        sys.stdout.flush()
+    except:
+        pass
+
 def unregister_addon():
     """Unregisters this addon"""
     sn = bpy.context.scene.sn
     t1 = time.time()
-    # if sn.addon_unregister:
-    #     try:
-    #         sn.addon_unregister[0]()
-    #     except Exception as error:
-    #         print("error when unregister:", error)
-    #     sn.addon_unregister.clear()
+    print("Serpens DIAGNOSTIC: Unregistering previous addon version...")
+    safe_flush()
     if sn.addon_modules:
         try:
+            # This is the most likely candidate for the 5-minute hang
+            m_t1 = time.time()
             sn.addon_modules[0].unregister()
+            print(f"Serpens DIAGNOSTIC: mod.unregister() interior took {round((time.time()-m_t1)*1000, 2)}ms")
         except Exception as error:
-            print("error when unregister:", error)
+            print(f"Serpens ERROR: error when unregister: {error}")
         sn.addon_modules.clear()
-    if sn.debug_compile_time:
-        print(f"---\nUnregister took {round((time.time()-t1)*1000, 2)}ms")
+    
+    print(f"Serpens DIAGNOSTIC: Total Unregister block took {round((time.time()-t1)*1000, 2)}ms")
+    safe_flush()
 
 
 def compile_addon():
     """Reregisters the current addon code and stores results"""
     if (
+        not state.is_loading
+        or (state.is_loading and bpy.context.scene.sn.compile_on_load)
+    ) and (
         not bpy.context.scene.sn.pause_reregister
         and not bpy.context.scene.sn.is_exporting
     ):
         t1 = time.time()
         sn = bpy.context.scene.sn
-
-        # Unregister previous version
-        unregister_addon()
-
-        # create text file
-        txt = bpy.data.texts.new("tmp_serpens")
-        txt.use_fake_user = False
-
-        t2 = time.time()
-        code = format_single_file()
-        # code += "\nbpy.context.scene.sn.addon_unregister.append(unregister)"
-        # code += "\nregister()"
-        if sn.debug_compile_time:
-            print(f"Generating code took {round((time.time()-t2)*1000, 2)}ms")
-        txt.write(code)
-
-        if sn.debug_code:
-            if not "serpens_code_log" in bpy.data.texts:
-                log = bpy.data.texts.new("serpens_code_log")
-            log = bpy.data.texts["serpens_code_log"]
-            log.clear()
-            log.write(code)
-
-        # run text file
-        t2 = time.time()
-        # ctx = bpy.context.copy()
-        # ctx['edit_text'] = txt
+        
         try:
-            # exec(txt.as_string())
-            # bpy.ops.text.run_script(ctx)
-            mod = bpy.data.texts["tmp_serpens"].as_module()
-            sn.addon_modules.append(mod)
-            mod.register()
-            print(
-                "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-            )
-            print(
-                "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-            )
-            print("Compiled successfully!")
-        except Exception as error:
-            print(error)
-            print("^ ERROR WHEN REGISTERING SERPENS ADDON ^\n")
-            if bpy.context.preferences.addons[
-                __name__.partition(".")[0]
-            ].preferences.keep_last_error_file:
-                if not "serpens_error" in bpy.data.texts:
-                    bpy.data.texts.new("serpens_error")
-                err = bpy.data.texts["serpens_error"]
-                err.clear()
-                err.write(code)
-        if sn.debug_compile_time:
-            print(f"Register took {round((time.time()-t2)*1000, 2)}ms\n---")
+            # Force progress prints regardless of settings
+            force_debug = True
 
-        # remove text file
-        bpy.data.texts.remove(txt)
-        sn.compile_time = time.time() - t1
+            # Unregister previous version
+            unregister_addon()
+
+            print("Serpens DIAGNOSTIC: Creating temporary script...")
+            safe_flush()
+
+            # create text file
+            txt = bpy.data.texts.new("tmp_serpens")
+            txt.use_fake_user = False
+
+            t2 = time.time()
+            # Pass is_loading state to skip heavy stuff
+            code = format_single_file()
+            
+            if sn.debug_compile_time or force_debug:
+                print(f"Serpens DIAGNOSTIC: Generating code took {round((time.time()-t2)*1000, 2)}ms")
+            txt.write(code)
+            safe_flush()
+
+            if sn.debug_code:
+                if not "serpens_code_log" in bpy.data.texts:
+                    log = bpy.data.texts.new("serpens_code_log")
+                log = bpy.data.texts["serpens_code_log"]
+                log.clear()
+                log.write(code)
+
+            # run text file
+            t3 = time.time()
+            print("Serpens DIAGNOSTIC: Loading and registering module...")
+            safe_flush()
+            try:
+                mod = bpy.data.texts["tmp_serpens"].as_module()
+                sn.addon_modules.append(mod)
+                
+                t4 = time.time()
+                mod.register()
+                if sn.debug_compile_time or state.is_loading:
+                    import datetime
+                    now = datetime.datetime.now().strftime("%H:%M:%S")
+                    print(f"[{now}] Serpens DIAGNOSTIC: mod.register() took {round((time.time()-t4)*1000, 2)}ms")
+                    
+                print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
+                print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
+                print("Compiled successfully!")
+            except Exception as error:
+                print(error)
+                print("^ ERROR WHEN REGISTERING SERPENS ADDON ^\n")
+                if bpy.context.preferences.addons[
+                    __name__.partition(".")[0]
+                ].preferences.keep_last_error_file:
+                    if not "serpens_error" in bpy.data.texts:
+                        bpy.data.texts.new("serpens_error")
+                    err = bpy.data.texts["serpens_error"]
+                    err.clear()
+                    err.write(code)
+            
+            if sn.debug_compile_time or state.is_loading:
+                import datetime
+                now = datetime.datetime.now().strftime("%H:%M:%S")
+                print(f"[{now}] Serpens DIAGNOSTIC: Total Register block took {round((time.time()-t3)*1000, 2)}ms")
+                print(f"[{now}] Serpens DIAGNOSTIC: Total compile_addon took {round((time.time()-t1)*1000, 2)}ms\n---")
+            safe_flush()
+
+
+            # remove text file
+            bpy.data.texts.remove(txt)
+            sn.compile_time = time.time() - t1
+        except Exception as e:
+            print(f"Serpens ERROR: Fatal internal error during compilation: {e}")
+            safe_flush()
+        finally:
+            # Final safety reset - this restores regular node update behavior
+            if state.is_loading:
+                print("Serpens DIAGNOSTIC: Resetting is_loading to False (Storm Muted).")
+                state.is_loading = False
+                safe_flush()
 
 
 LICENSE = """# This program is free software; you can redistribute it and/or modify
@@ -164,25 +199,43 @@ def format_single_file():
 
     # add node code
     postprops = ""
-    for node in get_trigger_nodes():
-        if node.code_import and not node.code_import in imports:
-            imports += "\n" + node.code_import
-        if node.code_imperative and not node.code_imperative in imperative:
-            imperative += "\n" + node.code_imperative
-        if node.code and node.bl_idname != "SN_PreferencesNode":
-            main += "\n" + node.code
-        if node.code and node.bl_idname == "SN_PreferencesNode":
-            postprops += "\n" + node.code
-        if node.code_register:
-            register += "\n" + node.code_register
-        if node.code_unregister:
-            unregister += "\n" + node.code_unregister
+    trigger_nodes = get_trigger_nodes()
+    total_nodes = len(trigger_nodes)
+    
+    if total_nodes > 0:
+        print(f"Serpens DIAGNOSTIC: Starting code generation for {total_nodes} trigger nodes...")
+    
+    for i, node in enumerate(trigger_nodes):
+        # Progress update every 100 nodes
+        if i > 0 and i % 100 == 0:
+            print(f"Serpens DIAGNOSTIC: ...processed {i}/{total_nodes} nodes")
+
+        try:
+            if node.code_import and not node.code_import in imports:
+                imports += "\n" + node.code_import
+            if node.code_imperative and not node.code_imperative in imperative:
+                imperative += "\n" + node.code_imperative
+            if node.code and node.bl_idname != "SN_PreferencesNode":
+                main += "\n" + node.code
+            if node.code and node.bl_idname == "SN_PreferencesNode":
+                postprops += "\n" + node.code
+            if node.code_register:
+                register += "\n" + node.code_register
+            if node.code_unregister:
+                unregister += "\n" + node.code_unregister
+        except Exception as e:
+            print(f"Serpens ERROR: Failed to generate code for node '{node.name}': {e}")
+    
+    if total_nodes > 0:
+        print(f"Serpens DIAGNOSTIC: Finished processing all {total_nodes} nodes.")
     t5 = time.time()
 
     # add property code
+    print("Serpens DIAGNOSTIC: Processing properties...")
     main += "\n" + property_imperative_code() + "\n"
     main += postprops + "\n"
     t6 = time.time()
+    print(f"Serpens DIAGNOSTIC: Property code generation took {round((t6-t5)*1000, 2)}ms")
 
     # add module store code
     if not sn.is_exporting:
@@ -197,31 +250,43 @@ def format_single_file():
     if not unregister.strip():
         unregister = "pass\n"
 
+    t_indent = time.time()
+    print("Serpens DIAGNOSTIC: Formatting and indenting final code...")
     code = f"{imports}\n{imperative}\n{main}\n\ndef register():\n{indent_code(register, 1, 0)}\n\ndef unregister():\n{indent_code(unregister, 1, 0)}\n\n"
     t7 = time.time()
+    print(f"Serpens DIAGNOSTIC: Final joining/indenting took {round((t7-t_indent)*1000, 2)}ms")
 
-    if (sn.remove_duplicate_code and sn.debug_code) or sn.is_exporting:
-        code = remove_duplicates(code)
+    # Skip heavy processing during initial file load migration
+    # We'll also force a print if it takes more than 100ms
+    if not state.is_loading:
+        if (sn.remove_duplicate_code and sn.debug_code) or sn.is_exporting:
+            code = remove_duplicates(code)
     t8 = time.time()
 
-    if (sn.format_code and sn.debug_code) or sn.is_exporting:
-        code = format_linebreaks(code)
+    if not state.is_loading:
+        if (sn.format_code and sn.debug_code) or sn.is_exporting:
+            code = format_linebreaks(code)
     t9 = time.time()
 
     if sn.is_exporting:
         code = f"{info()}\n{code}"
     code = f"{LICENSE}\n{code}"
 
-    if sn.debug_compile_time:
-        print(f"--Variable register code generation took {round((t2-t1)*1000, 2)}ms")
-        print(f"--Property register code generation took {round((t3-t2)*1000, 2)}ms")
-        print(f"--Property unregister code generation took {round((t4-t3)*1000, 2)}ms")
-        print(f"--Node code generation took {round((t5-t4)*1000, 2)}ms")
-        print(f"--Property imperative code generation took {round((t6-t5)*1000, 2)}ms")
-        print(f"--Joining code took {round((t7-t6)*1000, 2)}ms")
-        print(f"--Removing duplicate code took {round((t8-t7)*1000, 2)}ms")
-        print(f"--Formatting linebreaks took {round((t9-t8)*1000, 2)}ms")
+    # FORCE these prints only during load investigation or if debug is on
+    if sn.debug_compile_time or state.is_loading:
+        import datetime
+        now = datetime.datetime.now().strftime("%H:%M:%S")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Variable register code generation took {round((t2-t1)*1000, 2)}ms")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Property register code generation took {round((t3-t2)*1000, 2)}ms")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Property unregister code generation took {round((t4-t3)*1000, 2)}ms")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Node code generation took {round((t5-t4)*1000, 2)}ms")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Property imperative code generation took {round((t6-t5)*1000, 2)}ms")
+        print(f"[{now}] Serpens DIAGNOSTIC: --Joining code took {round((t7-t6)*1000, 2)}ms")
     return code
+
+
+
+
 
 
 def remove_duplicates(code):
@@ -234,31 +299,50 @@ def remove_duplicates(code):
 
 def remove_duplicate_functions(code):
     lines = code.split("\n")
-    functions = []
-    remove = []
-    for line in lines:
-        if len(line) > 3 and line[:3] == "def":
-            func = line.split("(")[0].split(" ")[-1]
-            if func in functions or code.count(func) == 1:
-                if not func in ["register", "unregister"]:
-                    remove.append(func)
-            else:
-                functions.append(func)
+    remove = set()
+    
+    # Count occurrences of all function names first (one pass)
+    import re
+    # Find all function names defined: def name(
+    all_defined = re.findall(r'^def\s+([a-zA-Z0-9_]+)\s*\(', code, re.MULTILINE)
+    # Find all words in the code to check for usage
+    all_words = re.findall(r'\b[a-zA-Z0-9_]+\b', code)
+    from collections import Counter
+    usage_counts = Counter(all_words)
+    
+    seen_defs = set()
+    for func in all_defined:
+        # If we've seen this definition before, or if it's never used (count is 1 because of def itself)
+        if func in seen_defs or usage_counts[func] == 1:
+            if func not in ["register", "unregister"]:
+                remove.add(func)
+        seen_defs.add(func)
+
+    if not remove:
+        return code
 
     newLines = []
-    inFunc = False
+    inFuncToRemove = False
     for line in lines:
-        if inFunc and len(line) - len(line.lstrip()) == 0:
-            inFunc = False
-        if not inFunc:
-            if len(line) > 3 and line[:3] == "def" and "(" in line:
-                for func in remove:
-                    if line.split("(")[0] == f"def {func}":
-                        remove.remove(func)
-                        inFunc = True
-                        break
-            if not inFunc:
-                newLines.append(line)
+        # Detect function header
+        if line.startswith("def "):
+            func_name = line.split("(")[0][4:].strip()
+            if func_name in remove:
+                inFuncToRemove = True
+                # Remove from set so we only skip the FIRST definition if it's a duplicate definition
+                # Though in our usage_counts logic, we usually want to skip all that satisfy the criteria
+                continue
+            else:
+                inFuncToRemove = False
+        
+        # Check if we should end the skipping block (unindented line that isn't empty)
+        if inFuncToRemove:
+            if line.strip() != "" and not line.startswith(" ") and not line.startswith("\t") and not line.startswith("def "):
+                inFuncToRemove = False
+
+        if not inFuncToRemove:
+            newLines.append(line)
+            
     return "\n".join(newLines)
 
 
@@ -333,7 +417,7 @@ def get_trigger_nodes():
             for node in ntree.nodes:
                 if getattr(node, "is_trigger", False):
                     nodes.append(node)
-    nodes = sorted(nodes, key=lambda node: node.order)
+    nodes = sorted(nodes, key=lambda node: getattr(node, "order", 0))
     return nodes
 
 

@@ -30,7 +30,30 @@ class SN_DrawCircleNode(SN_ScriptingBaseNode, bpy.types.Node):
         self.add_float_input("Width").default_value = 1
         self.add_integer_input("Segments").default_value = 32
 
-        self.add_enum_input("On Top").items = str(["NONE", "ALWAYS", "LESS", "LESS_EQUAL", "EQUAL", "GREATER", "GREATER_EQUAL"])
+        self.add_enum_input("On Top").items = str(
+            [
+                "NONE",
+                "ALWAYS",
+                "LESS",
+                "LESS_EQUAL",
+                "EQUAL",
+                "GREATER",
+                "GREATER_EQUAL",
+            ]
+        )
+
+        self.add_enum_input("Blend Mode").items = str(
+            [
+                "NONE",
+                "ALPHA",
+                "ALPHA_PREMULT",
+                "ADDITIVE",
+                "ADDITIVE_PREMULT",
+                "MULTIPLY",
+                "SUBTRACT",
+                "INVERT",
+            ]
+        )
 
         inp = self.add_float_vector_input("Location")
         inp.size = 2
@@ -50,12 +73,13 @@ class SN_DrawCircleNode(SN_ScriptingBaseNode, bpy.types.Node):
         """
 
         self.code = f"""
-            gpu.state.line_width_set({self.inputs["Width"].python_value})
-            gpu.state.depth_test_set({self.inputs["On Top"].python_value})
-            gpu.state.depth_mask_set(True)
-            gpu.state.blend_set('ALPHA')
+            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})"}
+            {f"gpu.state.line_width_set({self.inputs['Width'].python_value})"}
+            {f"gpu.state.blend_set({self.inputs['Blend Mode'].python_value})"}
+            {f"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
 
             gpu_extras_presets.draw_circle_2d({self.inputs["Location"].python_value}, {self.inputs["Color"].python_value}, {self.inputs["Radius"].python_value}, segments={self.inputs["Segments"].python_value})
+
 
             {self.indent(self.outputs[0].python_value, 3)}
         """

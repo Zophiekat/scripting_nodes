@@ -295,9 +295,9 @@ class ScriptingNodesTree(bpy.types.NodeTree):
         self._update_tree_links()
         self._update_reroutes()
 
-    def reevaluate(self):
+    def reevaluate(self, force=False):
         """Reevaluates all nodes in this node tree"""
         # evaluate all nodes
         for node in self.nodes:
             if getattr(node, "is_sn", False):
-                node._evaluate(bpy.context)
+                node._evaluate_forced(bpy.context, force=force)

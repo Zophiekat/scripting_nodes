@@ -54,6 +54,19 @@ class SN_DrawQuadNode(SN_ScriptingBaseNode, bpy.types.Node):
             ]
         )
 
+        self.add_enum_input("Blend Mode").items = str(
+            [
+                "NONE",
+                "ALPHA",
+                "ALPHA_PREMULT",
+                "ADDITIVE",
+                "ADDITIVE_PREMULT",
+                "MULTIPLY",
+                "SUBTRACT",
+                "INVERT",
+            ]
+        )
+
         self.add_boolean_input("Backface Culling").default_value = True
 
         inp = self.add_float_vector_input("Bottom Left")
@@ -125,12 +138,12 @@ class SN_DrawQuadNode(SN_ScriptingBaseNode, bpy.types.Node):
             shader.bind()
             shader.uniform_float("color", {self.inputs["Color"].python_value})
 
-            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})" if self.use_3d else ""}
-            {"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
+            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})"}
+            {f"gpu.state.blend_set({self.inputs['Blend Mode'].python_value})"}
+            {f"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
 
             {f"gpu.state.face_culling_set('BACK' if {self.inputs['Backface Culling'].python_value} else 'NONE')" if self.use_3d else ""}
 
-            gpu.state.blend_set('ALPHA')
             batch.draw(shader)
             {self.indent(self.outputs[0].python_value, 3)}
         """

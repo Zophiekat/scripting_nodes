@@ -100,6 +100,7 @@ def register():
     # app handlers
     bpy.app.handlers.depsgraph_update_post.append(handlers.depsgraph_handler)
     bpy.app.handlers.load_post.append(handlers.load_handler)
+    bpy.app.handlers.load_pre.append(handlers.load_pre_handler)
     bpy.app.handlers.load_pre.append(handlers.unload_handler)
     bpy.app.handlers.undo_post.append(handlers.undo_post)
     bpy.app.handlers.save_pre.append(handlers.save_pre)

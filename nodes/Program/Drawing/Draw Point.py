@@ -2,6 +2,11 @@ import bpy
 from ...base_node import SN_ScriptingBaseNode
 
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Serpens Node
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 class SN_DrawPointNode(SN_ScriptingBaseNode, bpy.types.Node):
     bl_idname = "SN_DrawPointNode"
     bl_label = "Draw Point"
@@ -56,6 +61,19 @@ class SN_DrawPointNode(SN_ScriptingBaseNode, bpy.types.Node):
             ]
         )
 
+        self.add_enum_input("Blend Mode").items = str(
+            [
+                "NONE",
+                "ALPHA",
+                "ALPHA_PREMULT",
+                "ADDITIVE",
+                "ADDITIVE_PREMULT",
+                "MULTIPLY",
+                "SUBTRACT",
+                "INVERT",
+            ]
+        )
+
         inp = self.add_float_vector_input("Location")
         inp.size = 2
         inp.default_value[0] = 0
@@ -68,10 +86,18 @@ class SN_DrawPointNode(SN_ScriptingBaseNode, bpy.types.Node):
         layout.prop(self, "use_3d", text="Use 3D")
         layout.prop(self, "use_loc_list", text="Draw Multiple")
 
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Evaluate Node and Draw GPU stuffs
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     def evaluate(self, context):
         self.code_import = f"""
             import gpu
             import gpu_extras
+            from gpu_extras.batch import batch_for_shader
+            from mathutils import Vector
         """
 
         coords = f"coords = ()"
@@ -84,22 +110,17 @@ class SN_DrawPointNode(SN_ScriptingBaseNode, bpy.types.Node):
         self.code = f"""
             {coords}
 
-            prefs = bpy.context.preferences
-            if hasattr(prefs.system, "gpu_backend") and prefs.system.gpu_backend == 'VULKAN':
-                shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
-            else:
-                shader = gpu.shader.from_builtin('UNIFORM_COLOR')
-            batch = gpu_extras.batch.batch_for_shader(shader, 'POINTS', {{"pos": coords}})
+            shader = gpu.shader.from_builtin('POINT_UNIFORM_COLOR')
+            batch = batch_for_shader(shader, 'POINTS', {{"pos": coords}})
 
             shader.bind()
-            shader.uniform_float("color", {self.inputs["Color"].python_value})
+            shader.uniform_float("color", {self.inputs['Color'].python_value})
 
-            gpu.state.point_size_set({self.inputs["Size"].python_value})
+            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})"}
+            {f"gpu.state.point_size_set({self.inputs['Size'].python_value})"}
+            {f"gpu.state.blend_set({self.inputs['Blend Mode'].python_value})"}
+            {f"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
 
-            gpu.state.depth_test_set({self.inputs["On Top"].python_value})
-            gpu.state.depth_mask_set(True)
-
-            gpu.state.blend_set('ALPHA')
             batch.draw(shader)
             {self.indent(self.outputs[0].python_value, 3)}
         """

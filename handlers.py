@@ -14,6 +14,7 @@ from .extensions.snippet_ops import load_snippets
 from .msgbus import subscribe_to_name_change
 from .node_tree.graphs.node_refs import clear_node_cache
 from .node_tree.graphs.node_tree import ScriptingNodesTree
+from .settings import state
 
 
 def migrate_socket_data():
@@ -29,6 +30,7 @@ def migrate_socket_data():
     2. Default bpy.props storage (accessed via socket.bl_system_properties_get())
     """
     migrated_count = 0
+    missing_nodes = []  # Track nodes from missing packages
 
     for node_tree in bpy.data.node_groups:
         if node_tree.bl_idname != "ScriptingNodesTree":
@@ -36,6 +38,9 @@ def migrate_socket_data():
 
         for node in node_tree.nodes:
             if not getattr(node, "is_sn", False):
+                # This is likely a node from an uninstalled package
+                if node.bl_idname not in ["NodeReroute", "NodeFrame", "NodeGroupInput", "NodeGroupOutput"]:
+                    missing_nodes.append((node.name, node.bl_idname, node_tree.name))
                 continue
 
             # Process all sockets (inputs and outputs)
@@ -109,6 +114,24 @@ def migrate_socket_data():
         print(
             f"Serpens: Migrated {migrated_count} socket properties to new storage format"
         )
+    
+    # Report missing nodes summary
+    if missing_nodes:
+        YELLOW = '\033[93m'
+        RESET = '\033[0m'
+        print(f"{YELLOW}⚠️  Serpens: Found {len(missing_nodes)} node(s) from missing packages:{RESET}")
+        # Group by node type for cleaner output
+        from collections import defaultdict
+        by_type = defaultdict(list)
+        for name, bl_idname, tree_name in missing_nodes:
+            by_type[bl_idname].append((name, tree_name))
+        
+        for bl_idname, nodes in by_type.items():
+            print(f"{YELLOW}   - {bl_idname}: {len(nodes)} node(s){RESET}")
+            if len(nodes) <= 3:  # Show details for small counts
+                for name, tree_name in nodes:
+                    print(f"{YELLOW}     • '{name}' in tree '{tree_name}'{RESET}")
+        print(f"{YELLOW}   These nodes will be skipped. Install the missing packages to restore them.{RESET}")
 
 
 def _get_old_property_value(item, key):
@@ -253,6 +276,58 @@ def migrate_scene_property_groups():
         print(f"Serpens: Migrated {migrated_count} scene property group names")
 
 
+def migrate_static_uids():
+    """Ensure all Serpens nodes have a persistent static_uid and are in the node_refs collection.
+    
+    This is vital for stable registration names (like Panels) and for triggering updates
+    between nodes that reference each other.
+    """
+    from uuid import uuid4
+    migrated_count = 0
+    for ntree in bpy.data.node_groups:
+        if ntree.bl_idname != "ScriptingNodesTree":
+            continue
+        
+        # Ensure collection exists for each trigger type
+        for node in ntree.nodes:
+            if not getattr(node, "is_sn", False):
+                continue
+                
+            # If static_uid is missing, give it one
+            if not node.static_uid:
+                # Try to recover old UID from various sources
+                old_uid = None
+                
+                # Check if there's a last_idname we can extract from
+                if hasattr(node, "last_idname") and node.last_idname:
+                    # Extract UID from something like "SNA_PT_CRZ_PANEL_F094F"
+                    parts = node.last_idname.split("_")
+                    if len(parts) > 0:
+                        potential_uid = parts[-1]
+                        if len(potential_uid) == 5 and potential_uid.isalnum():
+                            old_uid = potential_uid
+                            print(f"Serpens DIAGNOSTIC: Recovered UID '{old_uid}' from last_idname for node '{node.name}'")
+                
+                if old_uid:
+                    node.static_uid = old_uid
+                else:
+                    node.static_uid = uuid4().hex[:5].upper()
+                    print(f"Serpens DIAGNOSTIC: Generated new UID '{node.static_uid}' for node '{node.name}' ({node.bl_idname})")
+                migrated_count += 1
+
+            
+            # Ensure it's in the node_refs collection uniquely
+            if hasattr(node, "collection"):
+                 # Check if UID already in collection to avoid duplicates
+                 if not any(ref.uid == node.static_uid for ref in node.collection.refs):
+                     node_ref = node.collection.refs.add()
+                     node_ref.uid = node.static_uid
+                     node_ref.name = node.name
+
+    if migrated_count > 0:
+        print(f"Serpens: Initialized {migrated_count} missing static UIDs")
+
+
 def migrate_portal_nodes():
     """Migrate portal nodes to ensure proper initialization after Blender 5.0 load.
 
@@ -280,7 +355,7 @@ def migrate_portal_nodes():
 
             # Initialize _prev_var_name if missing
             if node.get("_prev_var_name") is None:
-                node["_prev_var_name"] = node.var_name
+                node["_prev_var_name"] = node.get("var_name", "")
                 actions.append("init _prev_var_name")
 
             # Enable use_custom_color
@@ -336,11 +411,16 @@ def migrate_portal_nodes():
 
 @persistent
 def depsgraph_handler(dummy):
+    # During heavy migration/loading, don't hammer the depsgraph logic
+    if state.is_loading:
+        return
+
+    from .utils import collection_has_item
     for group in bpy.data.node_groups:
         if group.bl_idname == "ScriptingNodesTree":
             group.use_fake_user = True
-            # add empty collection for node drawing
-            if not "empty" in group.node_refs:
+            # Use faster helper to avoid Blender 5.0 string-indexing bottleneck
+            if not collection_has_item(group.node_refs, "empty"):
                 group.node_refs.add().name = "empty"
 
 
@@ -360,65 +440,170 @@ def post_migration_cleanup(should_compile=True):
                 refs.fix_ref_names()
 
             # Store all links then relink them to force node recalculation
-            links_to_restore = []
-            for link in ntree.links:
-                links_to_restore.append((link.from_socket, link.to_socket))
+            # NOTE: This is VERY aggressive and causes a 5-minute hang in large projects.
+            # We are disabling it as it's largely redundant in Serpens 3/5.0
+            
+            # links_to_restore = []
+            # for link in ntree.links:
+            #     links_to_restore.append((link.from_socket, link.to_socket))
 
-            # Remove all links
-            ntree.links.clear()
+            # # Remove all links
+            # ntree.links.clear()
 
-            # Restore all links - this triggers the proper update callbacks
-            for from_socket, to_socket in links_to_restore:
-                try:
-                    ntree.links.new(from_socket, to_socket)
-                except Exception:
-                    pass
+            # # Restore all links - this triggers the proper update callbacks
+            # for from_socket, to_socket in links_to_restore:
+            #     try:
+            #         ntree.links.new(from_socket, to_socket)
+            #     except Exception:
+            #         pass
+
 
             # Clear link cache to reset state
             if id(ntree) in ScriptingNodesTree.link_cache:
                 del ScriptingNodesTree.link_cache[id(ntree)]
 
             # Reevaluate all nodes to ensure code is regenerated
-            ntree.reevaluate()
+            ntree.reevaluate(force=True)
     if should_compile:
         compile_addon()
 
 
 @persistent
 def load_handler(dummy):
+    import time
+    load_start_time = time.time()
+    GREEN = '\033[92m'
+    RESET = '\033[0m'
+    print(f"{GREEN}Serpens DIAGNOSTIC: File load started at {time.strftime('%H:%M:%S')}{RESET}")
+    
     clear_node_cache()
+    try:
+        if hasattr(bpy.context.scene, "sn"):
+            sn = bpy.context.scene.sn
+            sn.picker_active = False
+            subscribe_to_name_change()
+            check_easy_bpy_install()
+            migration_ran = False
+
+            # Only run Blender 5.0 migration once per file
+            if not sn.migrated_blender_5:
+                migration_start = time.time()
+                migration_ran = True
+                print("Serpens: Running Blender 5.0 migration...")
+                
+                # Migrate old data storage to new format (Blender 5.0 API changes)
+                step_start = time.time()
+                migrate_socket_data()
+                print(f"{GREEN}Serpens DIAGNOSTIC: Socket migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                step_start = time.time()
+                migrate_node_ref_data()
+                print(f"{GREEN}Serpens DIAGNOSTIC: Node ref migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                step_start = time.time()
+                migrate_variable_data()
+                print(f"{GREEN}Serpens DIAGNOSTIC: Variable migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                step_start = time.time()
+                migrate_scene_property_groups()
+                print(f"{GREEN}Serpens DIAGNOSTIC: Scene property migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                step_start = time.time()
+                migrate_portal_nodes()
+                print(f"{GREEN}Serpens DIAGNOSTIC: Portal migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                step_start = time.time()
+                migrate_static_uids()
+                print(f"{GREEN}Serpens DIAGNOSTIC: UID migration took {time.time() - step_start:.2f}s{RESET}")
+                
+                # Sync refs with nodes and recalculate all links
+                step_start = time.time()
+                post_migration_cleanup(should_compile=False)
+                print(f"{GREEN}Serpens DIAGNOSTIC: Post-migration cleanup took {time.time() - step_start:.2f}s{RESET}")
+                
+                # CRITICAL: Re-evaluate again after UID fixes
+                # The first pass fixes UIDs (like Panel IDs), but nodes that reference
+                # those UIDs (like Script nodes calling Snippets) still have old function names.
+                # This second pass regenerates all code with the corrected UIDs.
+                step_start = time.time()
+                print("Serpens: Re-evaluating with corrected UIDs...")
+                for ntree in bpy.data.node_groups:
+                    if ntree.bl_idname == "ScriptingNodesTree":
+                        ntree.reevaluate(force=True)
+                print(f"{GREEN}Serpens DIAGNOSTIC: Second re-evaluation took {time.time() - step_start:.2f}s{RESET}")
+                
+                # Mark migration as complete
+                sn.migrated_blender_5 = True
+                migration_total = time.time() - migration_start
+                print(f"{GREEN}Serpens: Migration complete (total time: {migration_total:.2f}s){RESET}")
+
+            # Forced re-evaluation on load for all trees if not migrated
+            if sn.migrated_blender_5 and not migration_ran:
+                step_start = time.time()
+                for ntree in bpy.data.node_groups:
+                    if ntree.bl_idname == "ScriptingNodesTree":
+                        ntree.reevaluate(force=True)
+                print(f"{GREEN}Serpens DIAGNOSTIC: Re-evaluation took {time.time() - step_start:.2f}s{RESET}")
+                
+                # Check for missing package nodes (even on already-migrated files)
+                missing_nodes = []
+                for ntree in bpy.data.node_groups:
+                    if ntree.bl_idname == "ScriptingNodesTree":
+                        for node in ntree.nodes:
+                            if not getattr(node, "is_sn", False):
+                                if node.bl_idname not in ["NodeReroute", "NodeFrame", "NodeGroupInput", "NodeGroupOutput"]:
+                                    missing_nodes.append((node.name, node.bl_idname, ntree.name))
+                
+                if missing_nodes:
+                    YELLOW = '\033[93m'
+                    RESET_COLOR = '\033[0m'
+                    print(f"{YELLOW}⚠️  Serpens: Found {len(missing_nodes)} node(s) from missing packages:{RESET_COLOR}")
+                    from collections import defaultdict
+                    by_type = defaultdict(list)
+                    for name, bl_idname, tree_name in missing_nodes:
+                        by_type[bl_idname].append((name, tree_name))
+                    
+                    for bl_idname, nodes in by_type.items():
+                        print(f"{YELLOW}   - {bl_idname}: {len(nodes)} node(s){RESET_COLOR}")
+                        if len(nodes) <= 3:
+                            for name, tree_name in nodes:
+                                print(f"{YELLOW}     • '{name}' in tree '{tree_name}'{RESET_COLOR}")
+                    print(f"{YELLOW}   These nodes will be skipped. Install the missing packages to restore them.{RESET_COLOR}")
+
+            # Reset loading state after all evaluations are done
+            state.is_loading = False
+
+            # Compile if enabled
+            if sn.compile_on_load:
+                # Use the timer instead of direct call to allow any final 
+                # node updates to be bundled into this single compile
+                if not bpy.app.timers.is_registered(compile_addon):
+                    bpy.app.timers.register(compile_addon, first_interval=0.1)
+                print(f"{GREEN}Serpens DIAGNOSTIC: Scheduled debounced compilation...{RESET}")
+
+            check_serpens_updates(bl_info["version"])
+            bpy.ops.sn.reload_packages()
+            load_snippets()
+            
+            sn.hide_preferences = False
+            unwatch_script_changes()
+            if sn.watch_script_changes:
+                watch_script_changes()
+                
+            load_total = time.time() - load_start_time
+            print(f"{GREEN}Serpens DIAGNOSTIC: ✅ Total file load block finished in: {load_total:.2f}s{RESET}")
+            print(f"{GREEN}Serpens DIAGNOSTIC: keeping is_loading=True to mute update storm...{RESET}")
+    finally:
+        # We NO LONGER set is_loading=False here. 
+        # The scheduled compile_addon will do it after the storm passes.
+        pass
+    
+@persistent
+def load_pre_handler(dummy):
+    state.is_loading = True
     if hasattr(bpy.context.scene, "sn"):
-        sn = bpy.context.scene.sn
-        sn.picker_active = False
-        subscribe_to_name_change()
-        check_easy_bpy_install()
-
-        # Only run Blender 5.0 migration once per file
-        if not sn.migrated_blender_5:
-            print("Serpens: Running Blender 5.0 migration...")
-            # Migrate old data storage to new format (Blender 5.0 API changes)
-            migrate_socket_data()
-            migrate_node_ref_data()
-            migrate_variable_data()
-            migrate_scene_property_groups()
-            migrate_portal_nodes()
-            # Sync refs with nodes and recalculate all links
-            post_migration_cleanup(should_compile=False)
-            # Mark migration as complete
-            sn.migrated_blender_5 = True
-            print("Serpens: Migration complete")
-
-        # Compile if enabled (always, regardless of migration)
-        if sn.compile_on_load:
-            compile_addon()
-
-        check_serpens_updates(bl_info["version"])
-        bpy.ops.sn.reload_packages()
-        load_snippets()
-        sn.hide_preferences = False
         unwatch_script_changes()
-        if sn.watch_script_changes:
-            watch_script_changes()
+        unregister_addon()
 
 
 @persistent

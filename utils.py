@@ -94,14 +94,23 @@ def normalize_code(raw_code):
 def indent_code(code, indents, start_line_index=1):
     """ Indents the given code by the given amount of indents. Use this when inserting multiline blocks into code """
     # join code blocks if given
-    if type(code) == list:
+    if isinstance(code, list):
         code = "\n".join(code)
+
+    if not code:
+        return ""
 
     # split code and indent properly
     lines = code.split("\n")
-    for i in range(start_line_index, len(lines)):
-        lines[i] = " "*(4*indents) + lines[i]
-    return "\n".join(lines)
+    prefix = " " * (4 * indents)
+    
+    if start_line_index == 0:
+        return "\n".join([prefix + line for line in lines])
+    
+    # Keep original first lines unindented if start_line_index > 0
+    result = lines[:start_line_index]
+    result.extend([prefix + line for line in lines[start_line_index:]])
+    return "\n".join(result)
 
 
 
