@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 import bpy
 from ...base_node import SN_ScriptingBaseNode
 
@@ -118,3 +119,159 @@ class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
             batch.draw(shader)
             {self.indent(self.outputs[0].python_value, 3)}
         """
+=======
+import bpy
+from ...base_node import SN_ScriptingBaseNode
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Serpens Node
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+class SN_DrawLineNode(SN_ScriptingBaseNode, bpy.types.Node):
+    bl_idname = "SN_DrawLineNode"
+    bl_label = "Draw Line"
+    node_color = "PROGRAM"
+
+    def update_use3d(self, context):
+        for input in self.inputs:
+            if input.bl_label == "Float Vector" and input.subtype == "NONE":
+                input.size = 3 if self.use_3d else 2
+        self._evaluate(context)
+
+    use_3d: bpy.props.BoolProperty(
+        name="Use 3D",
+        description="Whether to use 3D or 2D coordinates",
+        default=False,
+        update=update_use3d,
+    )
+
+    def update_use_loc_list(self, context):
+        self.inputs["Line Locations"].set_hide(not self.use_loc_list)
+        for inp in self.inputs:
+            if inp.bl_label == "Float Vector" and inp.subtype == "NONE":
+                inp.set_hide(self.use_loc_list)
+        self._evaluate(context)
+
+    use_loc_list: bpy.props.BoolProperty(
+        name="Draw Multiple",
+        description="Whether to draw multiple lines (this is more efficient than separate nodes)",
+        default=False,
+        update=update_use_loc_list,
+    )
+
+    def on_create(self, context):
+        self.add_execute_input()
+
+        inp = self.add_float_vector_input("Color")
+        inp.subtype = "COLOR_ALPHA"
+
+        self.add_float_input("Width").default_value = 1
+
+        self.add_enum_input("On Top").items = str(
+            [
+                "NONE",
+                "ALWAYS",
+                "LESS",
+                "LESS_EQUAL",
+                "EQUAL",
+                "GREATER",
+                "GREATER_EQUAL",
+            ]
+        )
+
+        self.add_enum_input("Blend Mode").items = str(
+            [
+                "NONE",
+                "ALPHA",
+                "ALPHA_PREMULT",
+                "ADDITIVE",
+                "ADDITIVE_PREMULT",
+                "MULTIPLY",
+                "SUBTRACT",
+                "INVERT",
+            ]
+        )
+
+        inp = self.add_float_vector_input("Point 1")
+        inp.size = 2
+        inp.default_value[0] = 0
+        inp.default_value[1] = 0
+        inp.default_value[2] = 0
+
+        inp = self.add_float_vector_input("Point 2")
+        inp.size = 2
+        inp.default_value[0] = 0
+        inp.default_value[1] = 1
+        inp.default_value[2] = 1
+
+        inp = self.add_list_input("Line Locations")
+        inp.set_hide(True)
+
+        self.add_execute_output()
+
+    def draw_node(self, context, layout):
+        layout.prop(self, "use_3d", text="Use 3D")
+        layout.prop(self, "use_loc_list", text="Draw Multiple")
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+#
+# Evaluate Node and Draw GPU stuffs
+#
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    def evaluate(self, context):
+        self.code_import = f"""
+            import gpu
+            import gpu_extras
+            from gpu_extras.batch import batch_for_shader
+            from mathutils import Vector
+        """
+
+        p1 = self.inputs["Point 1"].python_value
+        p2 = self.inputs["Point 2"].python_value
+
+        lines = f"""
+            lines = [(tuple({p1}), tuple({p2}))]
+        """
+
+        if self.use_loc_list:
+            # Line Locations is a flat list of points, treat consecutive points as line segments
+            lines = f"""
+            points_{self.static_uid} = {self.inputs['Line Locations'].python_value}
+            lines = []
+            for i_{self.static_uid} in range(len(points_{self.static_uid}) - 1):
+                lines.append((tuple(points_{self.static_uid}[i_{self.static_uid}]), tuple(points_{self.static_uid}[i_{self.static_uid} + 1])))
+            """
+
+        coords = f"""
+            {lines}
+            coords = []
+            indices = []
+            for i_{self.static_uid}, line in enumerate(lines):
+                coords.append(line[0])
+                coords.append(line[1])
+                indices.append((i_{self.static_uid}*2, i_{self.static_uid}*2+1))
+        """
+
+        self.code = f"""
+            {coords}
+
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            batch = batch_for_shader(shader, 'LINES', {{"pos": coords}}, indices=tuple(indices))
+
+            shader.bind()
+            shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+            shader.uniform_float("color", {self.inputs['Color'].python_value})
+            shader.uniform_float("lineWidth", {self.inputs['Width'].python_value})
+
+            {f"gpu.state.depth_test_set({self.inputs['On Top'].python_value})"}
+            {f"gpu.state.line_width_set({self.inputs['Width'].python_value})"}
+            {f"gpu.state.blend_set({self.inputs['Blend Mode'].python_value})"}
+            {f"gpu.state.depth_mask_set(True)" if self.use_3d else ""}
+
+            batch.draw(shader)
+            {self.indent(self.outputs[0].python_value, 3)}
+        """
+>>>>>>> Stashed changes
